@@ -22,6 +22,13 @@ using namespace DirectX;
 // An example of this can be found in the class method: OnDestroy().
 using Microsoft::WRL::ComPtr;
 
+
+struct ShaderData
+{
+    XMFLOAT4 solidColor;
+    float padding[60]; // Padding so the constant buffer is 256-byte aligned.
+};
+
 class D3D12HelloTriangle : public DXSample
 {
 public:
@@ -47,11 +54,18 @@ private:
     ComPtr<IDXGISwapChain3> m_swapChain;
     ComPtr<ID3D12Device> m_device;
     ComPtr<ID3D12Resource> m_renderTargets[FrameCount];
+
+    // Shader Ressources
+    ComPtr<ID3D12DescriptorHeap> m_descriptorHeap[FrameCount];
+    ComPtr<ID3D12Resource> m_ressourcesMemory[FrameCount];
+    ComPtr<ID3D12Resource> m_uploadResourceHeap;
+    UINT8* m_writableAdresses[FrameCount];
+    ShaderData m_shaderData;
+
     ComPtr<ID3D12CommandAllocator> m_commandAllocator;
     ComPtr<ID3D12CommandQueue> m_commandQueue;
     ComPtr<ID3D12RootSignature> m_rootSignature;
     ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
-    ComPtr<ID3D12DescriptorHeap> m_srvHeap;
     ComPtr<ID3D12PipelineState> m_pipelineState;
     ComPtr<ID3D12GraphicsCommandList> m_commandList;
     UINT m_rtvDescriptorSize;

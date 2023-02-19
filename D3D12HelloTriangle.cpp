@@ -108,6 +108,16 @@ void D3D12HelloTriangle::LoadPipeline()
 
     // Create descriptor heaps.
     {
+        // Describe and create a shader resource view (SRV) heap for the shader parameters.
+        for (int i = 0; i < FrameCount; ++i)
+        {
+            D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
+            srvHeapDesc.NumDescriptors = 1;
+            srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+            srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+            ThrowIfFailed(m_device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&m_descriptorHeap[i])));
+        }
+
         // Describe and create a render target view (RTV) descriptor heap.
         D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
         rtvHeapDesc.NumDescriptors = FrameCount;
@@ -137,15 +147,74 @@ void D3D12HelloTriangle::LoadPipeline()
 // Load the sample assets.
 void D3D12HelloTriangle::LoadAssets()
 {
-    // Create an empty root signature.
-    {
-        CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
-        rootSignatureDesc.Init(0, nullptr, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
-        ComPtr<ID3DBlob> signature;
-        ComPtr<ID3DBlob> error;
-        ThrowIfFailed(D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error));
-        ThrowIfFailed(m_device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&m_rootSignature)));
+
+    // Create Root signature
+    {
+        // Descriptor range (one type cbv)
+        D3D12_DESCRIPTOR_RANGE  descriptorTableRanges[1]; // only one range right now
+        descriptorTableRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV; // this is a range of constant buffer views (descriptors)
+        descriptorTableRanges[0].NumDescriptors = 1; // we only have one constant buffer, so the range is only 1
+        descriptorTableRanges[0].BaseShaderRegister = 0; // start index of the shader registers in the range
+        descriptorTableRanges[0].RegisterSpace = 0; // space 0. can usually be zero
+        descriptorTableRanges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND; // this appends the range to the end of the root signature descriptor tables
+
+        // create a descriptor table (multiple type)
+        D3D12_ROOT_DESCRIPTOR_TABLE descriptorTable;
+        descriptorTable.NumDescriptorRanges = _countof(descriptorTableRanges); // we only have one range
+        descriptorTable.pDescriptorRanges = &descriptorTableRanges[0]; // the pointer to the beginning of our ranges array
+
+        // Create root signature.
+        {
+            // create a root parameter and fill it out
+            D3D12_ROOT_PARAMETER  rootParameters[1]; // only one parameter right now
+            rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; // this is a descriptor table
+            rootParameters[0].DescriptorTable = descriptorTable; // this is our descriptor table for this root parameter
+            rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+            CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
+            rootSignatureDesc.Init(_countof(rootParameters), 
+                rootParameters,
+                0, 
+                nullptr, 
+                D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+            );
+
+            ComPtr<ID3DBlob> signature;
+            ComPtr<ID3DBlob> error;
+            ThrowIfFailed(D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error));
+            ThrowIfFailed(m_device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&m_rootSignature)));
+        }
+    }
+
+    m_shaderData.solidColor = XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f);
+    //ZeroMemory(&m_shaderData, sizeof(ShaderData));
+
+    // Create the constant buffers.
+    {
+        // create a resource heap, descriptor heap, and pointer to cbv for each frame
+        for (int i = 0; i < FrameCount; ++i)
+        {
+            ThrowIfFailed(m_device->CreateCommittedResource(
+                &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD), // this heap will be used to upload the constant buffer data
+                D3D12_HEAP_FLAG_NONE, // no flags
+                &CD3DX12_RESOURCE_DESC::Buffer(1024 * 64), // size of the resource heap. Must be a multiple of 64KB for single-textures and constant buffers
+                D3D12_RESOURCE_STATE_GENERIC_READ, // will be data that is read from so we keep it in the generic read state
+                nullptr, // we do not have use an optimized clear value for constant buffers
+                IID_PPV_ARGS(&m_ressourcesMemory[i])
+            ));
+            m_ressourcesMemory[i]->SetName(L"Constant Buffer Upload Resource Heap");
+
+            D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
+            cbvDesc.BufferLocation = m_ressourcesMemory[i]->GetGPUVirtualAddress();
+            cbvDesc.SizeInBytes = (sizeof(ShaderData) + 255) & ~255;    // CB size is required to be 256-byte aligned.
+            m_device->CreateConstantBufferView(&cbvDesc, m_descriptorHeap[i]->GetCPUDescriptorHandleForHeapStart());
+
+            // Get cpu mappable address
+            CD3DX12_RANGE readRange(0, 0);    // We do not intend to read from this resource on the CPU. (End is less than or equal to begin)
+            ThrowIfFailed(m_ressourcesMemory[i]->Map(0, &readRange, reinterpret_cast<void**>(&m_writableAdresses[i])));
+            memcpy(m_writableAdresses[i], &m_shaderData, sizeof(ShaderData));
+        }
     }
 
     // Create the pipeline state, which includes compiling and loading shaders.
@@ -254,6 +323,34 @@ void D3D12HelloTriangle::LoadAssets()
 // Update frame-based values.
 void D3D12HelloTriangle::OnUpdate()
 {
+    // update app logic, such as moving the camera or figuring out what objects are in view
+    static float rIncrement = 0.02f;
+    static float gIncrement = 0.06f;
+    static float bIncrement = 0.09f;
+
+    m_shaderData.solidColor.x += rIncrement;
+    m_shaderData.solidColor.y += gIncrement;
+    m_shaderData.solidColor.z += bIncrement;
+
+    if (m_shaderData.solidColor.x >= 1.0 || m_shaderData.solidColor.x <= 0.0)
+    {
+        m_shaderData.solidColor.x = m_shaderData.solidColor.x >= 1.0 ? 1.0 : 0.0;
+        rIncrement = -rIncrement;
+    }
+    if (m_shaderData.solidColor.y >= 1.0 || m_shaderData.solidColor.y <= 0.0)
+    {
+        m_shaderData.solidColor.y = m_shaderData.solidColor.y >= 1.0 ? 1.0 : 0.0;
+        gIncrement = -gIncrement;
+    }
+    if (m_shaderData.solidColor.z >= 1.0 || m_shaderData.solidColor.z <= 0.0)
+    {
+        m_shaderData.solidColor.z = m_shaderData.solidColor.z >= 1.0 ? 1.0 : 0.0;
+        bIncrement = -bIncrement;
+    }
+
+    // copy our ConstantBuffer instance to the mapped constant buffer resource
+    memcpy(m_writableAdresses[m_frameIndex], &m_shaderData, sizeof(ShaderData));
+
 }
 
 // Render the scene.
@@ -278,6 +375,12 @@ void D3D12HelloTriangle::OnDestroy()
     // cleaned up by the destructor.
     WaitForPreviousFrame();
 
+    for (int i = 0; i < FrameCount; ++i)
+    {
+        SAFE_RELEASE(m_descriptorHeap[i]);
+        SAFE_RELEASE(m_ressourcesMemory[i]);
+    };
+
     CloseHandle(m_fenceEvent);
 }
 
@@ -297,6 +400,12 @@ void D3D12HelloTriangle::PopulateCommandList()
     m_commandList->SetGraphicsRootSignature(m_rootSignature.Get());
     m_commandList->RSSetViewports(1, &m_viewport);
     m_commandList->RSSetScissorRects(1, &m_scissorRect);
+
+    // Set descriptors Heaps
+    ID3D12DescriptorHeap* descriptorHeaps[] = { m_descriptorHeap[m_frameIndex].Get() };
+    m_commandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
+    m_commandList->SetGraphicsRootDescriptorTable(0, m_descriptorHeap[m_frameIndex]->GetGPUDescriptorHandleForHeapStart());
+
 
     // Indicate that the back buffer will be used as a render target.
     m_commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(m_renderTargets[m_frameIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
