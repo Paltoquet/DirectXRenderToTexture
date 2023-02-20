@@ -112,15 +112,17 @@ void D3D12HelloTriangle::LoadPipeline()
         for (int i = 0; i < FrameCount; ++i)
         {
             D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-            srvHeapDesc.NumDescriptors = 1;
+            srvHeapDesc.NumDescriptors = 2;
             srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
             srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
             ThrowIfFailed(m_device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&m_descriptorHeap[i])));
+
+            m_srvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         }
 
         // Describe and create a render target view (RTV) descriptor heap.
         D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-        rtvHeapDesc.NumDescriptors = FrameCount;
+        rtvHeapDesc.NumDescriptors = FrameCount * 2;
         rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
         rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
         ThrowIfFailed(m_device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_rtvHeap)));
@@ -147,27 +149,47 @@ void D3D12HelloTriangle::LoadPipeline()
 // Load the sample assets.
 void D3D12HelloTriangle::LoadAssets()
 {
-
-
     // Create Root signature
     {
         // Descriptor range (one type cbv)
-        D3D12_DESCRIPTOR_RANGE  descriptorTableRanges[1]; // only one range right now
+        D3D12_DESCRIPTOR_RANGE  descriptorTableRanges[2]; // only one range right now
         descriptorTableRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV; // this is a range of constant buffer views (descriptors)
         descriptorTableRanges[0].NumDescriptors = 1; // we only have one constant buffer, so the range is only 1
         descriptorTableRanges[0].BaseShaderRegister = 0; // start index of the shader registers in the range
         descriptorTableRanges[0].RegisterSpace = 0; // space 0. can usually be zero
         descriptorTableRanges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND; // this appends the range to the end of the root signature descriptor tables
 
+        descriptorTableRanges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV; // this is a range of constant buffer views (descriptors)
+        descriptorTableRanges[1].NumDescriptors = 1; // we only have one texture, so the range is only 1
+        descriptorTableRanges[1].BaseShaderRegister = 0; // start index of the shader registers in the range
+        descriptorTableRanges[1].RegisterSpace = 0; // space 0. can usually be zero
+        descriptorTableRanges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND; // this appends the range to the end of the root signature descriptor tables
+
         // create a descriptor table (multiple type)
         D3D12_ROOT_DESCRIPTOR_TABLE descriptorTable;
         descriptorTable.NumDescriptorRanges = _countof(descriptorTableRanges); // we only have one range
         descriptorTable.pDescriptorRanges = &descriptorTableRanges[0]; // the pointer to the beginning of our ranges array
 
+        // create a static sampler
+        D3D12_STATIC_SAMPLER_DESC staticSampler = {};
+        staticSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+        staticSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_MIRROR;
+        staticSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_MIRROR;
+        staticSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_MIRROR;
+        staticSampler.MipLODBias = 0;
+        staticSampler.MaxAnisotropy = 0;
+        staticSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+        staticSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+        staticSampler.MinLOD = 0.0f;
+        staticSampler.MaxLOD = D3D12_FLOAT32_MAX;
+        staticSampler.ShaderRegister = 0;
+        staticSampler.RegisterSpace = 0;
+        staticSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
         // Create root signature.
         {
             // create a root parameter and fill it out
-            D3D12_ROOT_PARAMETER  rootParameters[1]; // only one parameter right now
+            D3D12_ROOT_PARAMETER  rootParameters[1];
             rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; // this is a descriptor table
             rootParameters[0].DescriptorTable = descriptorTable; // this is our descriptor table for this root parameter
             rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -175,8 +197,8 @@ void D3D12HelloTriangle::LoadAssets()
             CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
             rootSignatureDesc.Init(_countof(rootParameters), 
                 rootParameters,
-                0, 
-                nullptr, 
+                1, 
+                &staticSampler,
                 D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
             );
 
@@ -188,7 +210,6 @@ void D3D12HelloTriangle::LoadAssets()
     }
 
     m_shaderData.solidColor = XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f);
-    //ZeroMemory(&m_shaderData, sizeof(ShaderData));
 
     // Create the constant buffers.
     {
@@ -217,10 +238,35 @@ void D3D12HelloTriangle::LoadAssets()
         }
     }
 
-    // Create the pipeline state, which includes compiling and loading shaders.
+    // Create RenderTexture
     {
-        ComPtr<ID3DBlob> vertexShader;
-        ComPtr<ID3DBlob> pixelShader;
+        RECT dimension;
+        dimension.left = m_viewport.TopLeftX;
+        dimension.top = m_viewport.TopLeftY;
+        dimension.right = m_viewport.TopLeftX + m_viewport.Width;
+        dimension.bottom = m_viewport.TopLeftY + m_viewport.Height;
+
+        CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_rtvHeap->GetCPUDescriptorHandleForHeapStart());
+        // Render Target offset
+        rtvHandle.Offset(2, m_rtvDescriptorSize);
+
+        for (UINT i = 0; i < FrameCount; i++)
+        {
+            CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandle(m_descriptorHeap[i]->GetCPUDescriptorHandleForHeapStart());
+            srvHandle.Offset(1, m_srvDescriptorSize);
+            m_renderTexture[i] = new RenderTexture(DXGI_FORMAT_R8G8B8A8_UNORM);
+            m_renderTexture[i]->SetClearColor({ 0.1f, 0.1f, 1.0f, 1.0f });
+            m_renderTexture[i]->SetDevice(m_device.Get(), srvHandle, rtvHandle);
+            m_renderTexture[i]->SetWindow(dimension);
+            rtvHandle.Offset(1, m_rtvDescriptorSize);
+        }
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC trianglePsoDesc = {};
+    // Create pipeline states, which includes compiling and loading shaders.
+    {
+        ComPtr<ID3DBlob> triangleVertexShader;
+        ComPtr<ID3DBlob> trianglePixelShader;
 
 #if defined(_DEBUG)
         // Enable better shader debugging with the graphics debugging tools.
@@ -229,8 +275,8 @@ void D3D12HelloTriangle::LoadAssets()
         UINT compileFlags = 0;
 #endif
 
-        ThrowIfFailed(D3DCompileFromFile(GetAssetFullPath(L"shaders.hlsl").c_str(), nullptr, nullptr, "VSMain", "vs_5_0", compileFlags, 0, &vertexShader, nullptr));
-        ThrowIfFailed(D3DCompileFromFile(GetAssetFullPath(L"shaders.hlsl").c_str(), nullptr, nullptr, "PSMain", "ps_5_0", compileFlags, 0, &pixelShader, nullptr));
+        ThrowIfFailed(D3DCompileFromFile(GetAssetFullPath(L"shaders.hlsl").c_str(), nullptr, nullptr, "VSMain", "vs_5_0", compileFlags, 0, &triangleVertexShader, nullptr));
+        ThrowIfFailed(D3DCompileFromFile(GetAssetFullPath(L"shaders.hlsl").c_str(), nullptr, nullptr, "PSMain", "ps_5_0", compileFlags, 0, &trianglePixelShader, nullptr));
 
         // Define the vertex input layout.
         D3D12_INPUT_ELEMENT_DESC inputElementDescs[] =
@@ -240,31 +286,74 @@ void D3D12HelloTriangle::LoadAssets()
         };
 
         // Describe and create the graphics pipeline state object (PSO).
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-        psoDesc.InputLayout = { inputElementDescs, _countof(inputElementDescs) };
-        psoDesc.pRootSignature = m_rootSignature.Get();
-        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vertexShader.Get());
-        psoDesc.PS = CD3DX12_SHADER_BYTECODE(pixelShader.Get());
-        psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-        psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-        psoDesc.DepthStencilState.DepthEnable = FALSE;
-        psoDesc.DepthStencilState.StencilEnable = FALSE;
-        psoDesc.SampleMask = UINT_MAX;
-        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-        psoDesc.NumRenderTargets = 1;
-        psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-        psoDesc.SampleDesc.Count = 1;
-        ThrowIfFailed(m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_pipelineState)));
+        trianglePsoDesc.InputLayout = { inputElementDescs, _countof(inputElementDescs) };
+        trianglePsoDesc.pRootSignature = m_rootSignature.Get();
+        trianglePsoDesc.VS = CD3DX12_SHADER_BYTECODE(triangleVertexShader.Get());
+        trianglePsoDesc.PS = CD3DX12_SHADER_BYTECODE(trianglePixelShader.Get());
+        trianglePsoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+        trianglePsoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+        trianglePsoDesc.DepthStencilState.DepthEnable = FALSE;
+        trianglePsoDesc.DepthStencilState.StencilEnable = FALSE;
+        trianglePsoDesc.SampleMask = UINT_MAX;
+        trianglePsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        trianglePsoDesc.NumRenderTargets = 1;
+        trianglePsoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+        trianglePsoDesc.SampleDesc.Count = 1;
+        ThrowIfFailed(m_device->CreateGraphicsPipelineState(&trianglePsoDesc, IID_PPV_ARGS(&m_trianglePipelineState)));
+    }
+
+    {
+        // Quad PSO
+        ComPtr<ID3DBlob> quadVertexShader;
+        ComPtr<ID3DBlob> quadPixelShader;
+        ID3DBlob* errorBlob1 = nullptr;
+        ID3DBlob* errorBlob2 = nullptr;
+
+#if defined(_DEBUG)
+        // Enable better shader debugging with the graphics debugging tools.
+        UINT compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#else
+        UINT compileFlags = 0;
+#endif
+
+
+        HRESULT hr = D3DCompileFromFile(GetAssetFullPath(L"quad_shaders.hlsl").c_str(), nullptr, nullptr, "VSMain", "vs_5_0", compileFlags, 0, &quadVertexShader, &errorBlob1);
+        hr &= D3DCompileFromFile(GetAssetFullPath(L"quad_shaders.hlsl").c_str(), nullptr, nullptr, "PSMain", "ps_5_0", compileFlags, 0, &quadPixelShader, &errorBlob2);
+
+        if (FAILED(hr)) {
+            if (errorBlob1) {
+                OutputDebugStringA((char*)errorBlob1->GetBufferPointer());
+                errorBlob1->Release();
+            } 
+            if (errorBlob2) {
+                OutputDebugStringA((char*)errorBlob2->GetBufferPointer());
+                errorBlob2->Release();
+            }
+            throw HrException(hr);
+        }
+
+        // Define the vertex input layout.
+        D3D12_INPUT_ELEMENT_DESC inputElementDescs[] =
+        {
+            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+        };
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC quadPsoDesc = trianglePsoDesc;
+        quadPsoDesc.InputLayout = { inputElementDescs, _countof(inputElementDescs) };
+        quadPsoDesc.VS = CD3DX12_SHADER_BYTECODE(quadVertexShader.Get());
+        quadPsoDesc.PS = CD3DX12_SHADER_BYTECODE(quadPixelShader.Get());
+        ThrowIfFailed(m_device->CreateGraphicsPipelineState(&quadPsoDesc, IID_PPV_ARGS(&m_quadPipelineState)));
     }
 
     // Create the command list.
-    ThrowIfFailed(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_commandAllocator.Get(), m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
+    ThrowIfFailed(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_commandAllocator.Get(), m_trianglePipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
     // Command lists are created in the recording state, but there is nothing
     // to record yet. The main loop expects it to be closed, so close it now.
     ThrowIfFailed(m_commandList->Close());
 
-    // Create the vertex buffer.
+    // Create the Triangle vertex buffer.
     {
         // Define the geometry for a triangle.
         Vertex triangleVertices[] =
@@ -286,19 +375,55 @@ void D3D12HelloTriangle::LoadAssets()
             &CD3DX12_RESOURCE_DESC::Buffer(vertexBufferSize),
             D3D12_RESOURCE_STATE_GENERIC_READ,
             nullptr,
-            IID_PPV_ARGS(&m_vertexBuffer)));
+            IID_PPV_ARGS(&m_triangleVertexBuffer)));
 
         // Copy the triangle data to the vertex buffer.
         UINT8* pVertexDataBegin;
         CD3DX12_RANGE readRange(0, 0);        // We do not intend to read from this resource on the CPU.
-        ThrowIfFailed(m_vertexBuffer->Map(0, &readRange, reinterpret_cast<void**>(&pVertexDataBegin)));
+        ThrowIfFailed(m_triangleVertexBuffer->Map(0, &readRange, reinterpret_cast<void**>(&pVertexDataBegin)));
         memcpy(pVertexDataBegin, triangleVertices, sizeof(triangleVertices));
-        m_vertexBuffer->Unmap(0, nullptr);
+        m_triangleVertexBuffer->Unmap(0, nullptr);
 
         // Initialize the vertex buffer view.
-        m_vertexBufferView.BufferLocation = m_vertexBuffer->GetGPUVirtualAddress();
-        m_vertexBufferView.StrideInBytes = sizeof(Vertex);
-        m_vertexBufferView.SizeInBytes = vertexBufferSize;
+        m_triangleVertexBufferView.BufferLocation = m_triangleVertexBuffer->GetGPUVirtualAddress();
+        m_triangleVertexBufferView.StrideInBytes = sizeof(Vertex);
+        m_triangleVertexBufferView.SizeInBytes = vertexBufferSize;
+    }
+
+    // Create the Quad vertex buffer.
+    {
+        // Define the geometry for a quad.
+        TextureVertex quadVertices[] =
+        {
+            { { -1.0f, 1.0f, 0.0f }, { 0.0f, 0.0f} },
+            { { 1.0f,  1.0f, 0.0f }, { 1.0f, 0.0f} },
+            { { 1.0f, -1.0f, 0.0f }, { 1.0f, 1.0f} },
+
+            { { -1.0f,  1.0f, 0.0f }, { 0.0f, 0.0f } },
+            { {  1.0f, -1.0f, 0.0f }, { 1.0f, 1.0f } },
+            { { -1.0f, -1.0f, 0.0f }, { 0.0f, 1.0f } }
+        };
+
+        const UINT vertexBufferSize = sizeof(quadVertices);
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+            D3D12_HEAP_FLAG_NONE,
+            &CD3DX12_RESOURCE_DESC::Buffer(vertexBufferSize),
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&m_quadVertexBuffer)));
+
+        // Copy the triangle data to the vertex buffer.
+        UINT8* pVertexDataBegin;
+        CD3DX12_RANGE readRange(0, 0);        // We do not intend to read from this resource on the CPU.
+        ThrowIfFailed(m_quadVertexBuffer->Map(0, &readRange, reinterpret_cast<void**>(&pVertexDataBegin)));
+        memcpy(pVertexDataBegin, quadVertices, sizeof(quadVertices));
+        m_quadVertexBuffer->Unmap(0, nullptr);
+
+        // Initialize the vertex buffer view.
+        m_quadVertexBufferView.BufferLocation = m_quadVertexBuffer->GetGPUVirtualAddress();
+        m_quadVertexBufferView.StrideInBytes = sizeof(TextureVertex);
+        m_quadVertexBufferView.SizeInBytes = vertexBufferSize;
     }
 
     // Create synchronization objects and wait until assets have been uploaded to the GPU.
@@ -324,9 +449,9 @@ void D3D12HelloTriangle::LoadAssets()
 void D3D12HelloTriangle::OnUpdate()
 {
     // update app logic, such as moving the camera or figuring out what objects are in view
-    static float rIncrement = 0.02f;
-    static float gIncrement = 0.06f;
-    static float bIncrement = 0.09f;
+    static float rIncrement = 0.002f;
+    static float gIncrement = 0.006f;
+    static float bIncrement = 0.009f;
 
     m_shaderData.solidColor.x += rIncrement;
     m_shaderData.solidColor.y += gIncrement;
@@ -379,6 +504,8 @@ void D3D12HelloTriangle::OnDestroy()
     {
         SAFE_RELEASE(m_descriptorHeap[i]);
         SAFE_RELEASE(m_ressourcesMemory[i]);
+        m_renderTexture[i]->ReleaseDevice();
+        delete m_renderTexture[i];
     };
 
     CloseHandle(m_fenceEvent);
@@ -394,7 +521,7 @@ void D3D12HelloTriangle::PopulateCommandList()
     // However, when ExecuteCommandList() is called on a particular command 
     // list, that command list can then be reset at any time and must be before 
     // re-recording.
-    ThrowIfFailed(m_commandList->Reset(m_commandAllocator.Get(), m_pipelineState.Get()));
+    ThrowIfFailed(m_commandList->Reset(m_commandAllocator.Get(), m_trianglePipelineState.Get()));
 
     // Set necessary state.
     m_commandList->SetGraphicsRootSignature(m_rootSignature.Get());
@@ -406,7 +533,19 @@ void D3D12HelloTriangle::PopulateCommandList()
     m_commandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
     m_commandList->SetGraphicsRootDescriptorTable(0, m_descriptorHeap[m_frameIndex]->GetGPUDescriptorHandleForHeapStart());
 
+    // -------------------------------- Draw Triangle 
+    m_renderTexture[m_frameIndex]->BeginScene(m_commandList.Get());
+    CD3DX12_CPU_DESCRIPTOR_HANDLE offscreenHandle(m_rtvHeap->GetCPUDescriptorHandleForHeapStart(), m_frameIndex + 2, m_rtvDescriptorSize);
+    m_commandList->OMSetRenderTargets(1, &offscreenHandle, FALSE, nullptr);
 
+    m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    m_commandList->SetPipelineState(m_trianglePipelineState.Get());
+    m_commandList->IASetVertexBuffers(0, 1, &m_triangleVertexBufferView);
+    m_commandList->DrawInstanced(3, 1, 0, 0);
+
+    m_renderTexture[m_frameIndex]->EndScene(m_commandList.Get());
+
+    // -------------------------------- Draw Quad 
     // Indicate that the back buffer will be used as a render target.
     m_commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(m_renderTargets[m_frameIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
 
@@ -417,9 +556,11 @@ void D3D12HelloTriangle::PopulateCommandList()
     const float clearColor[] = { 0.0f, 0.2f, 0.4f, 1.0f };
     m_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    m_commandList->IASetVertexBuffers(0, 1, &m_vertexBufferView);
-    m_commandList->DrawInstanced(3, 1, 0, 0);
+    m_commandList->SetPipelineState(m_quadPipelineState.Get());
+    m_commandList->IASetVertexBuffers(0, 1, &m_quadVertexBufferView);
+    m_commandList->DrawInstanced(6, 1, 0, 0);
 
+    // -------------------------------- Present frame
     // Indicate that the back buffer will now be used to present.
     m_commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(m_renderTargets[m_frameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
 

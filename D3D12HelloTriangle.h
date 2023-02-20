@@ -12,6 +12,7 @@
 #pragma once
 
 #include "DXSample.h"
+#include "RenderTexture.h"
 
 using namespace DirectX;
 
@@ -48,12 +49,21 @@ private:
         XMFLOAT4 color;
     };
 
+    struct TextureVertex
+    {
+        XMFLOAT3 position;
+        XMFLOAT2 uv;
+    };
+
     // Pipeline objects.
     CD3DX12_VIEWPORT m_viewport;
     CD3DX12_RECT m_scissorRect;
     ComPtr<IDXGISwapChain3> m_swapChain;
     ComPtr<ID3D12Device> m_device;
     ComPtr<ID3D12Resource> m_renderTargets[FrameCount];
+
+    // Deferred Ressources
+    RenderTexture* m_renderTexture[FrameCount];
 
     // Shader Ressources
     ComPtr<ID3D12DescriptorHeap> m_descriptorHeap[FrameCount];
@@ -66,13 +76,17 @@ private:
     ComPtr<ID3D12CommandQueue> m_commandQueue;
     ComPtr<ID3D12RootSignature> m_rootSignature;
     ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
-    ComPtr<ID3D12PipelineState> m_pipelineState;
+    ComPtr<ID3D12PipelineState> m_trianglePipelineState;
+    ComPtr<ID3D12PipelineState> m_quadPipelineState;
     ComPtr<ID3D12GraphicsCommandList> m_commandList;
+    UINT m_srvDescriptorSize;
     UINT m_rtvDescriptorSize;
 
     // App resources.
-    ComPtr<ID3D12Resource> m_vertexBuffer;
-    D3D12_VERTEX_BUFFER_VIEW m_vertexBufferView;
+    ComPtr<ID3D12Resource> m_triangleVertexBuffer;
+    D3D12_VERTEX_BUFFER_VIEW m_triangleVertexBufferView;
+    ComPtr<ID3D12Resource> m_quadVertexBuffer;
+    D3D12_VERTEX_BUFFER_VIEW m_quadVertexBufferView;
 
     // Synchronization objects.
     UINT m_frameIndex;
