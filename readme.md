@@ -18,4 +18,4 @@ Our descriptors heaps are separated in two entities:
 
 Final Image
 
-![ScreenShot](https://github.com/Paltoquet/DirectXRenderToTexture/doc/Capture.JPG?raw=true)
+![ScreenShot](https://github.com/Paltoquet/DirectXRenderToTexture/blob/main/doc/Capture.JPG?raw=true)
